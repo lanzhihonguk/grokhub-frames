@@ -463,10 +463,34 @@ export default {
       }
 
       const fileName = `${randomId}${extension}`;
-      const { stream: limitedBody, getBytesRead } = createSizeLimitedStream(request.body, maxUploadSize);
 
-      // 使用流式上传 - 直接传递 request.body 到 R2
-      // 这样不会将整个文件加载到 Worker 内存中
+      let uploadBody;
+      let uploadedSize;
+      if (typeof parsedContentLength === 'number') {
+        uploadedSize = parsedContentLength;
+        if (parsedContentLength === 0) {
+          uploadBody = new Uint8Array();
+        } else if (request.body) {
+          const fixedLength = new FixedLengthStream(parsedContentLength);
+          request.body.pipeTo(fixedLength.writable).catch((error) => {
+            fixedLength.writable.abort(error);
+          });
+          uploadBody = fixedLength.readable;
+        } else {
+          return new Response('Upload failed: request body is missing.\n', { status: 400 });
+        }
+      } else {
+        const body = await request.arrayBuffer();
+        if (body.byteLength > maxUploadSize) {
+          return new Response(`Upload failed: file too large. Max size is ${formatBytes(maxUploadSize)}.\n`, {
+            status: 413,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          });
+        }
+        uploadBody = body;
+        uploadedSize = body.byteLength;
+      }
+
       const customMetadata = {
         oneTime: isOneTime ? 'true' : 'false',
         uploadTime: new Date().toISOString()
@@ -478,19 +502,17 @@ export default {
         customMetadata.expirationSeconds = expirationTime.toString();
       }
 
-      const uploadResult = await env.R2_BUCKET.put(fileName, limitedBody, {
+      const uploadResult = await env.R2_BUCKET.put(fileName, uploadBody, {
         httpMetadata: {
           contentType: contentType,
         },
         customMetadata: customMetadata,
       });
 
-      const uploadedSize =
+      uploadedSize =
         uploadResult && typeof uploadResult.size === 'number'
           ? uploadResult.size
-          : typeof parsedContentLength === 'number'
-            ? parsedContentLength
-            : getBytesRead();
+          : uploadedSize;
       const sizeLabel =
         typeof uploadedSize === 'number' ? formatBytes(uploadedSize) : 'unknown';
       const clientIP = getClientIP(request);
