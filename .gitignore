@@ -1,5 +1,6 @@
-*
-!.gitignore
-!README.md
-!frames/
+node_modules/
+.wrangler/
+.DS_Store
+
+frames/*
 !frames/.gitkeep
